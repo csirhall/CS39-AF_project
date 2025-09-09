@@ -1,14 +1,317 @@
-<html>
-  <head>
-    <title>CS 1030 Web Page Project</title>
-    <!-- Replace the content in the following line with your name. -->
-    <meta name="author" content="REPLACE WITH YOUR NAME">
-  </head>
-  <body>
-    <!-- Replace the lines in this body with your content. -->
-    <h1>CS 1030 - Web page Project</h1>
-    <img src="logo.png">
-    <p>Hello world!</p>
-    <p><a href="secondpage.html">More</a></p>
-  </body>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Drawing Studio</title>
+<style>
+  :root { --bg1:#667eea; --bg2:#764ba2; }
+  html,body{height:100%;margin:0;font-family:Segoe UI, Roboto, Helvetica, Arial, sans-serif;background:linear-gradient(135deg,var(--bg1),var(--bg2));display:flex;flex-direction:column;align-items:center;padding:20px;box-sizing:border-box;}
+  .toolbar{display:flex;gap:8px;background:rgba(255,255,255,0.92);padding:10px;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.12);align-items:center;flex-wrap:wrap;}
+  .toolbar button,.toolbar input {padding:8px 10px;border-radius:8px;border:none;cursor:pointer;font-size:14px}
+  .toolbar button.active{background:linear-gradient(45deg,#764ba2,#667eea);color:white;}
+  .stage{margin-top:18px; position: relative; }
+  canvas{display:block;background: #fff;border-radius:8px;box-shadow:0 12px 40px rgba(0,0,0,0.12); cursor: crosshair; }
+  #selectionBox{position:absolute;border:2px dashed rgba(0,0,0,0.65);background:rgba(0,0,0,0.03);display:none;pointer-events:none;z-index:30;}
+  #popup{position:absolute;display:none;z-index:40;background:white;border-radius:8px;padding:6px;box-shadow:0 8px 30px rgba(0,0,0,0.18);}
+  #popup button{display:block;background:transparent;border:none;padding:6px 8px;text-align:left;cursor:pointer;width:100%;}
+  #popup button:hover{background:#f0f0f0;}
+  .controls-right{margin-left:12px;display:flex;gap:8px;align-items:center;}
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <div>
+    <button data-tool="brush" class="active">Brush</button>
+    <button data-tool="eraser">Eraser</button>
+    <button data-tool="line">Line</button>
+    <button data-tool="rectangle">Rectangle</button>
+    <button data-tool="circle">Circle</button>
+    <button data-tool="select">Select</button>
+  </div>
+  <div class="controls-right">
+    <input type="color" id="color" value="#000000" title="Stroke color">
+    <input type="number" id="size" value="5" min="1" max="80" style="width:80px" title="Size (px)">
+    <button id="clear">Clear</button>
+    <button id="download">Download</button>
+  </div>
+</div>
+
+<div class="stage" id="stage">
+  <canvas id="canvas" width="1000" height="600"></canvas>
+  <div id="selectionBox"></div>
+  <div id="popup">
+    <button id="popup-move">Move</button>
+    <button id="popup-dup">Duplicate</button>
+    <button id="popup-del">Delete</button>
+  </div>
+</div>
+
+<script>
+const stage = document.getElementById('stage');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+const selectionBox = document.getElementById('selectionBox');
+const popup = document.getElementById('popup');
+const popupMove = document.getElementById('popup-move');
+const popupDup = document.getElementById('popup-dup');
+const popupDel = document.getElementById('popup-del');
+
+const colorInput = document.getElementById('color');
+const sizeInput = document.getElementById('size');
+const clearBtn = document.getElementById('clear');
+const downloadBtn = document.getElementById('download');
+
+let currentTool = 'brush';
+let drawing = false;
+let currentObj = null;
+let startX = 0, startY = 0;
+
+let objects = [];
+let selectionRect = null;
+let selectedObjects = [];
+
+/* ======= Helpers ======= */
+function getCanvasPoint(e){
+  const r = canvas.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+function deepCopy(v){ return JSON.parse(JSON.stringify(v)); }
+
+function getBounds(obj){
+  if(obj.type === 'brush' || obj.type === 'eraser'){
+    const xs = obj.points.map(p=>p.x), ys = obj.points.map(p=>p.y);
+    return { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
+  } else if(obj.type === 'line'){
+    return { x0: Math.min(obj.startX,obj.endX), y0: Math.min(obj.startY,obj.endY), x1: Math.max(obj.startX,obj.endX), y1: Math.max(obj.startY,obj.endY) };
+  } else if(obj.type === 'rectangle'){
+    return { x0: obj.startX, y0: obj.startY, x1: obj.startX + obj.w, y1: obj.startY + obj.h };
+  } else if(obj.type === 'circle'){
+    return { x0: obj.cx - obj.r, y0: obj.cy - obj.r, x1: obj.cx + obj.r, y1: obj.cy + obj.r };
+  }
+  return {x0:0,y0:0,x1:0,y1:0};
+}
+
+function drawObject(obj, offsetX=0, offsetY=0, alpha=1){
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  if(obj.type === 'brush' || obj.type === 'eraser'){
+    ctx.beginPath();
+    ctx.strokeStyle = obj.type === 'eraser' ? '#fff' : obj.color;
+    ctx.lineWidth = obj.size;
+    const pts = obj.points;
+    if(!pts || pts.length === 0){ ctx.restore(); return; }
+    ctx.moveTo(pts[0].x + offsetX, pts[0].y + offsetY);
+    for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i].x + offsetX, pts[i].y + offsetY);
+    ctx.stroke();
+  } else if(obj.type === 'line'){
+    ctx.beginPath();
+    ctx.strokeStyle = obj.color; ctx.lineWidth = obj.size;
+    ctx.moveTo(obj.startX + offsetX, obj.startY + offsetY);
+    ctx.lineTo(obj.endX + offsetX, obj.endY + offsetY);
+    ctx.stroke();
+  } else if(obj.type === 'rectangle'){
+    ctx.beginPath();
+    ctx.strokeStyle = obj.color; ctx.lineWidth = obj.size;
+    ctx.strokeRect(obj.startX + offsetX, obj.startY + offsetY, obj.w, obj.h);
+  } else if(obj.type === 'circle'){
+    ctx.beginPath();
+    ctx.strokeStyle = obj.color; ctx.lineWidth = obj.size;
+    ctx.arc(obj.cx + offsetX, obj.cy + offsetY, obj.r, 0, Math.PI*2);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function redrawAll(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  for(const o of objects) drawObject(o);
+}
+
+/* ======= Toolbar wiring ======= */
+document.querySelectorAll('[data-tool]').forEach(btn=>{
+  btn.addEventListener('click', ()=> {
+    document.querySelectorAll('[data-tool]').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    currentTool = btn.dataset.tool;
+    selectionRect = null; selectedObjects=[];
+    selectionBox.style.display='none';
+    popup.style.display='none';
+    canvas.style.cursor = (currentTool === 'select') ? 'default' : 'crosshair';
+  });
+});
+
+/* ======= Canvas pointer events ======= */
+canvas.addEventListener('pointerdown', (e) => {
+  const p = getCanvasPoint(e);
+  startX = p.x; startY = p.y;
+  drawing = true;
+
+  if(currentTool === 'brush' || currentTool === 'eraser'){
+    currentObj = { type: currentTool, color: colorInput.value, size: parseInt(sizeInput.value,10)||5, points: [{x:startX,y:startY}]};
+    objects.push(currentObj);
+  } else if(currentTool === 'line'){
+    currentObj = { type: 'line', color: colorInput.value, size: parseInt(sizeInput.value,10)||2, startX, startY, endX: startX, endY: startY};
+    objects.push(currentObj);
+  } else if(currentTool === 'rectangle'){
+    currentObj = { type: 'rectangle', color: colorInput.value, size: parseInt(sizeInput.value,10)||2, startX, startY, w:0, h:0 };
+    objects.push(currentObj);
+  } else if(currentTool === 'circle'){
+    currentObj = { type: 'circle', color: colorInput.value, size: parseInt(sizeInput.value,10)||2, cx:startX, cy:startY, r:0};
+    objects.push(currentObj);
+  } else if(currentTool === 'select'){
+    selectionRect = { x:startX, y:startY, w:0, h:0};
+    selectionBox.style.left=startX+'px'; selectionBox.style.top=startY+'px';
+    selectionBox.style.width='0px'; selectionBox.style.height='0px'; selectionBox.style.display='block';
+    selectedObjects = []; popup.style.display='none';
+  }
+  redrawAll();
+});
+
+canvas.addEventListener('pointermove', (e)=>{
+  const p = getCanvasPoint(e);
+  if(!drawing) return;
+
+  if(currentTool === 'brush' || currentTool === 'eraser'){
+    currentObj.points.push({x:p.x,y:p.y});
+    if(currentTool==='eraser'){
+      // true eraser live
+      objects = objects.flatMap(obj=>{
+        if(obj.type==='brush' || obj.type==='eraser'){
+          const newSegments = [], pts=obj.points, size=obj.size;
+          let segment=[];
+          for(const pt of pts){
+            const dx = pt.x - p.x, dy=pt.y - p.y;
+            if(Math.hypot(dx,dy) <= currentObj.size){
+              if(segment.length>0){ newSegments.push({ type: 'brush', color: obj.color, size: obj.size, points: segment }); segment=[]; }
+            } else segment.push(pt);
+          }
+          if(segment.length>0) newSegments.push({ type: 'brush', color: obj.color, size: obj.size, points: segment });
+          if(obj!==currentObj) return newSegments; else return [currentObj];
+        }
+        return obj;
+      });
+    }
+  } else if(currentTool === 'line'){
+    currentObj.endX=p.x; currentObj.endY=p.y;
+  } else if(currentTool === 'rectangle'){
+    currentObj.w = p.x-startX; currentObj.h=p.y-startY;
+  } else if(currentTool === 'circle'){
+    currentObj.r = Math.hypot(p.x-startX,p.y-startY);
+  } else if(currentTool === 'select' && selectionRect){
+    selectionRect.w = p.x-startX; selectionRect.h = p.y-startY;
+    selectionBox.style.left = Math.min(startX,p.x)+'px';
+    selectionBox.style.top = Math.min(startY,p.y)+'px';
+    selectionBox.style.width = Math.abs(selectionRect.w)+'px';
+    selectionBox.style.height = Math.abs(selectionRect.h)+'px';
+  }
+
+  redrawAll();
+  if(currentObj && currentTool!=='select') drawObject(currentObj);
+});
+
+/* ======= Pointer up ======= */
+canvas.addEventListener('pointerup', (e)=>{
+  drawing=false;
+  currentObj=null;
+  if(currentTool==='select' && selectionRect){
+    const sx0 = Math.min(selectionRect.x, selectionRect.x+selectionRect.w);
+    const sy0 = Math.min(selectionRect.y, selectionRect.y+selectionRect.h);
+    const sx1 = Math.max(selectionRect.x, selectionRect.x+selectionRect.w);
+    const sy1 = Math.max(selectionRect.y, selectionRect.y+selectionRect.h);
+    selectedObjects = objects.filter(o=>{
+      const b = getBounds(o);
+      return !(b.x1<sx0 || b.x0>sx1 || b.y1<sy0 || b.y0>sy1);
+    });
+    if(selectedObjects.length>0){
+      popup.style.left = sx0+'px';
+      popup.style.top = (sy0-40)+'px';
+      popup.style.display='block';
+    } else {
+      selectionBox.style.display='none';
+      popup.style.display='none';
+    }
+  }
+  redrawAll();
+});
+
+/* ======= Popup Actions ======= */
+let moveDrag=false, moveOffset={x:0,y:0}, movePreview=null;
+
+popupMove.addEventListener('click', ()=>{
+  if(selectedObjects.length===0) return;
+  moveDrag=true;
+  const rect = selectionBox.getBoundingClientRect();
+  moveOffset.x = 0; moveOffset.y=0;
+  movePreview = selectedObjects.map(o=>deepCopy(o));
+  objects = objects.filter(o=>!selectedObjects.includes(o));
+  popup.style.display='none';
+  selectionBox.style.display='none';
+  canvas.style.cursor='move';
+  startX=startY=0;
+});
+
+canvas.addEventListener('pointermove', (e)=>{
+  if(moveDrag && movePreview){
+    const p = getCanvasPoint(e);
+    moveOffset.x = p.x - startX;
+    moveOffset.y = p.y - startY;
+    redrawAll();
+    for(const o of movePreview) drawObject(o, moveOffset.x, moveOffset.y,0.6);
+  }
+});
+
+canvas.addEventListener('pointerup', (e)=>{
+  if(moveDrag && movePreview){
+    for(const o of movePreview){
+      if(o.type==='brush'||o.type==='eraser') for(const pt of o.points){ pt.x+=moveOffset.x; pt.y+=moveOffset.y; }
+      else if(o.type==='line'){ o.startX+=moveOffset.x;o.endX+=moveOffset.x;o.startY+=moveOffset.y;o.endY+=moveOffset.y;}
+      else if(o.type==='rectangle'){ o.startX+=moveOffset.x;o.startY+=moveOffset.y;}
+      else if(o.type==='circle'){ o.cx+=moveOffset.x;o.cy+=moveOffset.y;}
+      objects.push(o);
+    }
+    moveDrag=false; movePreview=null; selectionRect=null; selectedObjects=[];
+    canvas.style.cursor='crosshair';
+    redrawAll();
+  }
+});
+
+/* Duplicate */
+popupDup.addEventListener('click', ()=>{
+  if(selectedObjects.length===0) return;
+  const copy = selectedObjects.map(o=>deepCopy(o));
+  for(const o of copy){
+    if(o.type==='brush'||o.type==='eraser') for(const pt of o.points){ pt.x+=20; pt.y+=20; }
+    else if(o.type==='line'){ o.startX+=20;o.endX+=20;o.startY+=20;o.endY+=20; }
+    else if(o.type==='rectangle'){ o.startX+=20;o.startY+=20; }
+    else if(o.type==='circle'){ o.cx+=20;o.cy+=20; }
+    objects.push(o);
+  }
+  selectionRect=null; selectedObjects=[]; selectionBox.style.display='none'; popup.style.display='none';
+  redrawAll();
+});
+
+/* Delete */
+popupDel.addEventListener('click', ()=>{
+  if(selectedObjects.length===0) return;
+  objects = objects.filter(o=>!selectedObjects.includes(o));
+  selectionRect=null; selectedObjects=[];
+  selectionBox.style.display='none'; popup.style.display='none';
+  redrawAll();
+});
+
+/* Clear / Download */
+clearBtn.addEventListener('click', ()=>{ objects=[]; redrawAll(); });
+downloadBtn.addEventListener('click', ()=>{
+  const link=document.createElement('a');
+  link.download='drawing-'+Date.now()+'.png';
+  link.href=canvas.toDataURL();
+  link.click();
+});
+</script>
+</body>
 </html>
