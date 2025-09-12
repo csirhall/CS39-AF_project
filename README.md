@@ -1,4 +1,4 @@
-**CS39-AF genAI SPA Project One**
+# CS39-AF genAI SPA Project One
 
 
 **Project Overview and Purpose**
